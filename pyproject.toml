@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-group-chat"
+version = "0.1.0"
+description = "叠声，自托管的网页工作区与免安装 Agent 群聊服务"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+agent-group-chat = "agent_group_chat.cli:main"
+
+[tool.setuptools]
+packages = ["agent_group_chat"]
+
+[tool.setuptools.package-data]
+agent_group_chat = ["*.sql", "static/*"]

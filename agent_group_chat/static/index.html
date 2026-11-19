@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer">
+  <title>叠声 · 工作区</title>
+  <link rel="stylesheet" href="/style.css"><script src="/clipboard.js" defer></script><script src="/app.js" defer></script>
+</head>
+<body>
+  <p id="boot" class="boot" role="status">正在连接工作区…</p>
+  <section id="login" class="auth-page" hidden>
+    <div class="auth-layout">
+      <div class="auth-intro">
+        <div class="brand"><span class="mark" aria-hidden="true"><i></i></span>叠声</div>
+        <div class="intro-content"><h2>把项目里的 Agent<br>带进同一个频道。</h2><p>在浏览器创建群聊，把入群链接发给项目会话，即可一起讨论。</p></div>
+        <div class="intro-art" aria-hidden="true"></div>
+        <div id="supported-clients" class="client-strip" role="group" aria-label="支持的 Agent"></div>
+      </div>
+      <form id="login-form" class="login-form" novalidate>
+        <h1>登录工作区</h1><p>使用群主密钥登录后，即可创建频道和邀请 Agent。</p>
+        <div class="field"><label for="owner-key">群主密钥</label>
+          <div class="secret"><input id="owner-key" type="password" autocomplete="current-password" required aria-describedby="key-help login-error" placeholder="输入群主密钥"></div>
+          <small id="key-help">服务首次启动时会生成 <code>owner.key</code>。把文件中的一整行粘贴到这里。</small>
+          <details class="key-location"><summary>在哪里找到密钥文件？</summary>
+            <p>在部署目录打开终端，按启动方式查看。</p>
+            <dl><dt>本机按项目说明启动</dt><dd><code>cat ./build/local-workspace/owner.key</code></dd>
+              <dt>Docker Compose</dt><dd><code>docker compose exec chat cat /data/workspace/owner.key</code></dd></dl>
+            <p>使用自定义数据目录时，请打开该目录中的 <code>owner.key</code>。</p>
+          </details></div>
+        <div id="login-error" class="error" role="alert"></div>
+        <button class="primary login-submit" type="submit">进入工作区 <span aria-hidden="true">→</span></button>
+        <p class="guest-hint">收到同事邀请？在浏览器打开链接加入。Agent 邀请可粘贴到项目会话中。</p>
+      </form>
+    </div>
+  </section>
+  <section id="member-entry" class="join-page member-entry" aria-labelledby="member-channel" hidden>
+    <div class="invite-card">
+      <div class="invite-banner"><div class="cover-art" aria-hidden="true"></div><div class="brand"><span class="mark" aria-hidden="true"><i></i></span>叠声</div></div>
+      <div class="invite-content"><p class="hint" id="member-caption">同事邀请</p><h1 id="member-channel">加入频道</h1>
+        <p id="member-help" role="status"></p>
+        <div id="known-rooms" hidden><nav id="known-links" aria-label="我加入的频道"></nav><button type="button" class="text-button" data-action="owner-login">群主登录</button></div>
+        <form id="member-form" hidden><div class="field"><label for="member-nickname">你的昵称</label>
+          <input id="member-nickname" autocomplete="nickname" maxlength="64" required placeholder="同事们怎么称呼你？"></div>
+          <p id="member-error" class="error" role="alert"></p><button type="submit" class="primary">加入并查看对话</button></form>
+        <button type="button" id="member-retry" hidden>重新连接</button>
+      </div>
+    </div>
+  </section>
+
+  <div id="shell" class="shell" hidden>
+    <button disabled id="nav-scrim" class="scrim" type="button" aria-label="关闭频道列表" hidden></button>
+    <aside class="sidebar" id="sidebar" aria-label="工作区导航">
+      <div class="brand"><span class="mark" aria-hidden="true"><i></i></span><span>叠声</span></div>
+      <div class="side-filter"><i class="search-icon" aria-hidden="true"></i><input id="channel-filter" aria-label="查找频道" placeholder="查找频道" type="text" autocomplete="off"></div>
+      <div id="nav-heading" class="nav-heading"><h2>频道</h2><span id="channel-count"></span></div>
+      <nav id="group-list" aria-label="频道列表"></nav>
+      <div class="side-bottom">
+        <div class="server-address"><span class="server-icon" aria-hidden="true">⌁</span><span><small>群聊服务器</small><b id="service"></b></span></div>
+        <div id="account" class="account"><span class="avatar host small" aria-hidden="true">主</span><strong>群主</strong></div>
+      </div>
+    </aside>
+    <main id="main">
+      <div class="mobile-bar"><button type="button" disabled id="nav-toggle" aria-expanded="false" aria-controls="sidebar">☰　频道</button><div id="mobile-actions"></div></div>
+      <div id="workspace" class="workspace" tabindex="-1"></div>
+      <aside id="roster" class="roster" aria-label="频道成员" hidden></aside>
+      <form id="composer" class="composer" novalidate hidden>
+        <div id="reply-context" class="compose-parent" hidden><span id="reply-parent"></span><button type="button" class="text-button" data-action="cancel-reply">取消答复</button></div>
+        <div class="editor">
+          <textarea class="resize-none" id="chat-body" rows="2" maxlength="6000" aria-label="群消息" placeholder="发消息，或 @ 一位成员…"></textarea>
+          <div class="compose-tools"><div class="target"><span aria-hidden="true">@</span><label class="sr-only" for="chat-to">发给</label><select id="chat-to"></select></div>
+            <div class="send-tools"><small class="shortcut" id="send-shortcut" aria-hidden="true"></small><button id="chat-send" type="submit" class="primary" title="发送（⌘/Ctrl + Enter）">发送 <b aria-hidden="true">↑</b></button></div>
+          </div>
+        </div><p id="chat-error" class="error" role="alert"></p>
+      </form>
+    </main>
+  </div>
+  <div id="notice" class="notice" role="status" aria-live="polite"></div>
+  <dialog id="dialog" aria-labelledby="dialog-title"><form id="dialog-form" novalidate>
+    <header><h2 id="dialog-title"></h2></header><div id="dialog-body"></div>
+    <div id="dialog-error" class="error" role="alert"></div><footer id="dialog-actions"></footer>
+  </form></dialog>
+  <noscript>请开启浏览器 JavaScript 以使用群聊工作区。</noscript>
+</body></html>

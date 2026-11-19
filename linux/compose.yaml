@@ -1,0 +1,33 @@
+services:
+  chat:
+    build: .
+    command: ["--behind-proxy", "--port", "7810", "--public-url", "https://${CHAT_DOMAIN:?请在 .env 中填写 CHAT_DOMAIN}"]
+    volumes:
+      - chat_data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "from urllib.request import urlopen; urlopen('http://127.0.0.1:7810/health', timeout=2).close()"]
+      interval: 5s
+      timeout: 3s
+      retries: 6
+      start_period: 2s
+    restart: unless-stopped
+  gateway:
+    image: caddy:2-alpine
+    environment:
+      CHAT_DOMAIN: ${CHAT_DOMAIN:?请在 .env 中填写 CHAT_DOMAIN}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - gateway_data:/data
+      - gateway_config:/config
+    depends_on:
+      chat:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  chat_data:
+  gateway_data:
+  gateway_config:

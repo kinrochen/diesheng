@@ -1,0 +1,8 @@
+{
+  "profile": "product-admin",
+  "canonicalMap": "UX-CONTRACT.md",
+  "sourceRoots": ["agent_group_chat/static"],
+  "requiredCapabilities": ["Select/Listbox", "Form", "CRUD", "Toast"],
+  "ownership": {"Select/Listbox": "native"},
+  "evidence": {"crudFullFlow": "tests/browser.cjs", "failurePaths": "tests/test_http.py"}
+}

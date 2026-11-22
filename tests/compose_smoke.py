@@ -57,7 +57,16 @@ def main():
                 finally:
                     conn.close()
             with patch.object(socket,"create_connection",route):
-                assert request("/health")[0]==200
+                last_error = None
+                for _ in range(30):
+                    try:
+                        if request("/health")[0] == 200:
+                            break
+                    except OSError as error:
+                        last_error = error
+                    time.sleep(.2)
+                else:
+                    raise AssertionError("Caddy HTTPS 健康检查未通过") from last_error
                 origin={"Origin":"https://"+DOMAIN}
                 code,headers,_=request("/api/owner/login",{"key":key},origin)
                 assert code==200 and "Secure" in headers["Set-Cookie"]
@@ -75,12 +84,29 @@ def main():
                 form={"code":human_link.split("#invite=")[1]}
                 member_path="/api/member/"+group+"/"
                 status,hdrs,_=request(member_path+"preview",form,origin)
-                assert status==200 and "Secure" in hdrs["Set-Cookie"] and "Path="+member_path in hdrs["Set-Cookie"]
+                assert status==200 and "Set-Cookie" not in hdrs
+                auth={"username":"fixture.user","password":"fixture-only-password"}
+                status,hdrs,raw=request(member_path+"register",{**form,**auth,"name":"值班同事"},origin)
+                assert status==200 and "Secure" in hdrs["Set-Cookie"] and "Path=/api" in hdrs["Set-Cookie"]
+                member=json.loads(raw)["member"]
                 human={**origin,"Cookie":hdrs["Set-Cookie"].split(";")[0]}
-                assert request(member_path+"join",{**form,"name":"值班同事"},human)[0]==200
                 assert request(member_path+"detail",{},human)[0]==200 and request("/api/owner/groups",{},human)[0]==401
+                status,hdrs,_=request("/api/account/login",auth,origin)
+                assert status==200 and "Secure" in hdrs["Set-Cookie"]
+                human={**origin,"Cookie":hdrs["Set-Cookie"].split(";")[0]}
+                assert request(member_path+"detail",{},human)[0]==200
+                role={"group":group,"member":member,"admin":True}
+                assert request("/api/owner/admin-role",role,browser)[0]==200
+                assert request(member_path+"admin-role",role,human)[0]==403
+                assert request(member_path+"dissolve",{},human)[0]==403
+                assert request(member_path+"announcement-publish",{"body":"发布前核对验收记录。","version":0},human)[0]==200
+                agent={"Authorization":"Bearer "+secret}
+                status,_,raw=request("/api/project/wait",{"session":"smoke","timeout":0,"announcements":"AGENTS.md"},agent)
+                assert status==200 and json.loads(raw)["notice"]["kind"]=="announcement_updated"
+                status,_,raw=request("/api/project/announcement-ack",{"session":"smoke","version":1,"file":"AGENTS.md"},agent)
+                assert status==200 and json.loads(raw)["notice"] is None
                 assert b"awaiting_ticket" in request("/codex-listen.py")[2]
-            print("PASS · Compose 实包、Caddy HTTPS、独立的群主和同事会话、Agent 入群与事件监听脚本")
+            print("PASS · Compose 实包、Caddy HTTPS、频道管理员、Agent 入群与公告回执")
         finally:
             compose("down","--volumes","--rmi","local")
 

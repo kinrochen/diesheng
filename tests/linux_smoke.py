@@ -65,8 +65,8 @@ def exercise(root, restart):
         assert received["id"]==msg["id"]
         ans=agent(recipient,"post",kind="answer",body="可以。",parent=msg["id"],ticket=received["ticket"],request=ident())
         assert agent(sender,"wait",timeout=0)["delivery"]["id"]==ans["id"]
-        agent(sender,"accept",answer=ans["id"])
-    assert len(owner("conclusions",group=gid)["messages"])==3
+    answers=[message for message in owner("history",group=gid)["messages"] if message["kind"]=="answer"]
+    assert len(answers)==len(guests)
 
 
 def main():
@@ -114,7 +114,7 @@ def main():
             with patch.object(socket,"create_connection",route):
                 start()
                 exercise(root,restart)
-            print("PASS · Linux 部署包首次启动空工作区，重启保留密钥、邀请和成员；三个 Agent 身份完成 HTTPS 问答与采纳。")
+            print("PASS · Linux 部署包首次启动空工作区，重启保留密钥、邀请和成员。三个 Agent 身份完成 HTTPS 问答。")
     finally:
         docker("rm","--force",cid)
 

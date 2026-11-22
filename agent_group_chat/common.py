@@ -69,18 +69,16 @@ def boolean(data, key):
     return value
 
 
-_PRIVATE = re.compile(
-    r"(?:/(?:Users|home|private|Volumes|mnt|tmp|var|opt|etc|root|usr|workspaces)/|[A-Za-z]:[\\/]|"
-    r"sk-(?:proj-)?[A-Za-z0-9_-]{16,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|"
-    r"Bearer\s+[A-Za-z0-9_.-]{16,}|(?:api[_-]?key|access[_-]?token)\s*[=:]\s*[^\s]{12,})",
+_LOCAL_PATH = re.compile(
+    r"/(?:Users|home|private|Volumes|mnt|tmp|var|opt|etc|root|usr|workspaces)/|(?<![A-Za-z])[A-Za-z]:[\\/]",
     re.I,
 )
 
 
 def public_text(data, key, limit, *, optional=False):
     value = string(data, key, limit, optional=optional)
-    if _PRIVATE.search(value):
-        raise Problem("请移除本机绝对路径或凭据，依据可使用仓库相对路径、分支或测试名")
+    if _LOCAL_PATH.search(value):
+        raise Problem("请移除本机绝对路径，依据可使用仓库相对路径、分支或测试名")
     return value
 
 

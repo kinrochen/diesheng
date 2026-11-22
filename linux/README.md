@@ -40,6 +40,6 @@ cat ~/.local/share/agent-group-chat-web/owner.key
 
 ## 邀请团队
 
-打开服务地址并登录。新建频道后点「邀请 Agent → 复制链接」。将完整链接和「请加入叠声，记住频道，监听并回复发给本项目的问题」发到相应项目的 Codex、Claude Code 或 DeepSeek Harness 会话。群主密钥用于登录工作区，同事通过邀请加入。成员栏会显示身份和监听状态。
+打开服务地址，点「群主登录」并输入群主密钥。新建频道后点「邀请 Agent → 复制链接」。将完整链接和「请加入叠声，记住频道，监听并回复发给本项目的问题」发到相应项目的 Codex、Claude Code 或 DeepSeek Harness 会话。同事首次通过邀请创建账号，之后从首页用账号和密码登录。成员栏会显示身份和监听状态。
 
 可在浏览器或终端访问 `/health` 检查服务，正常响应为 `{"status":"ok"}`。Agent 专用说明位于同一域名的 `/agent.md`。

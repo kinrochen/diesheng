@@ -2,9 +2,12 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="light dark"><meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark"><meta name="referrer" content="no-referrer">
   <title>叠声 · 工作区</title>
-  <link rel="stylesheet" href="/style.css"><script src="/clipboard.js" defer></script><script src="/app.js" defer></script>
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/style.css"><script src="/clipboard.js" defer></script>
+  <script src="/vendor-marked.js" defer></script><script src="/vendor-purify.js" defer></script><script src="/markdown.js" defer></script>
+  <script src="/private-chat.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
   <p id="boot" class="boot" role="status">正在连接工作区…</p>
@@ -29,7 +32,7 @@
           </details></div>
         <div id="login-error" class="error" role="alert"></div>
         <button class="primary login-submit" type="submit">进入工作区 <span aria-hidden="true">→</span></button>
-        <p class="guest-hint">收到同事邀请？在浏览器打开链接加入。Agent 邀请可粘贴到项目会话中。</p>
+        <p class="guest-hint"><a href="/#channels">同事账号登录</a></p>
       </form>
     </div>
   </section>
@@ -38,11 +41,31 @@
       <div class="invite-banner"><div class="cover-art" aria-hidden="true"></div><div class="brand"><span class="mark" aria-hidden="true"><i></i></span>叠声</div></div>
       <div class="invite-content"><p class="hint" id="member-caption">同事邀请</p><h1 id="member-channel">加入频道</h1>
         <p id="member-help" role="status"></p>
-        <div id="known-rooms" hidden><nav id="known-links" aria-label="我加入的频道"></nav><button type="button" class="text-button" data-action="owner-login">群主登录</button></div>
-        <form id="member-form" hidden><div class="field"><label for="member-nickname">你的昵称</label>
-          <input id="member-nickname" autocomplete="nickname" maxlength="64" required placeholder="同事们怎么称呼你？"></div>
-          <p id="member-error" class="error" role="alert"></p><button type="submit" class="primary">加入并查看对话</button></form>
-        <button type="button" id="member-retry" hidden>重新连接</button>
+        <div id="known-rooms" hidden><nav id="known-links" aria-label="我加入的频道"></nav></div>
+        <form id="account-login-form" class="member-auth-form" aria-label="同事账号登录" novalidate hidden>
+          <div class="field"><label for="account-username">账号</label>
+            <input id="account-username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required aria-describedby="account-error"></div>
+          <div class="field"><label for="account-password">密码</label>
+            <div class="secret"><input id="account-password" type="password" autocomplete="current-password" maxlength="128" required aria-describedby="account-error"></div></div>
+          <p id="account-error" class="error" role="alert"></p><button type="submit" class="primary">登录</button>
+        </form>
+        <form id="member-form" class="member-auth-form" aria-label="同事邀请" novalidate hidden>
+          <div id="member-credentials"><div class="field"><label for="member-username">账号</label>
+            <input id="member-username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required aria-describedby="member-user-help member-error">
+            <small id="member-user-help">3–32 个英文字母、数字、点、下划线或短横线，以字母或数字开头。</small></div>
+          <div class="field"><label for="member-password">密码</label>
+            <div class="secret"><input id="member-password" type="password" autocomplete="new-password" maxlength="128" required aria-describedby="member-password-help member-error"></div>
+            <small id="member-password-help">至少 8 个字符。</small></div></div>
+          <div class="field" id="member-nickname-field"><label for="member-nickname">你的昵称</label>
+            <input id="member-nickname" autocomplete="nickname" maxlength="64" required aria-describedby="member-error"></div>
+          <p id="member-error" class="error" role="alert"></p><button type="submit" class="primary" id="member-submit">创建账号并加入</button>
+        </form>
+        <form id="member-recover-link" novalidate hidden>
+          <p id="member-recover-error" class="error" role="alert"></p>
+          <button type="submit" class="primary" aria-describedby="member-help member-recover-error">恢复并进入频道</button>
+        </form>
+        <div id="member-entry-actions" class="member-entry-actions" hidden></div>
+        <button type="button" id="member-retry" disabled hidden>重新连接</button>
       </div>
     </div>
   </section>
@@ -55,7 +78,13 @@
       <div id="nav-heading" class="nav-heading"><h2>频道</h2><span id="channel-count"></span></div>
       <nav id="group-list" aria-label="频道列表"></nav>
       <div class="side-bottom">
-        <div class="server-address"><span class="server-icon" aria-hidden="true">⌁</span><span><small>群聊服务器</small><b id="service"></b></span></div>
+        <div class="server-address">
+          <span class="server-icon" aria-hidden="true">⌁</span>
+          <span class="server-info"><small>群聊服务器</small><b id="service"></b></span>
+          <button type="button" id="theme-toggle" class="theme-toggle" aria-label="切换到浅色模式" title="切换到浅色模式" disabled>
+            <span class="theme-sun" aria-hidden="true">☀︎</span><span class="theme-moon" aria-hidden="true">☾</span>
+          </button>
+        </div>
         <div id="account" class="account"><span class="avatar host small" aria-hidden="true">主</span><strong>群主</strong></div>
       </div>
     </aside>
@@ -64,20 +93,45 @@
       <div id="workspace" class="workspace" tabindex="-1"></div>
       <aside id="roster" class="roster" aria-label="频道成员" hidden></aside>
       <form id="composer" class="composer" novalidate hidden>
-        <div id="reply-context" class="compose-parent" hidden><span id="reply-parent"></span><button type="button" class="text-button" data-action="cancel-reply">取消答复</button></div>
+        <div id="reply-context" class="compose-parent" hidden><span id="reply-parent"></span></div>
         <div class="editor">
-          <textarea class="resize-none" id="chat-body" rows="2" maxlength="6000" aria-label="群消息" placeholder="发消息，或 @ 一位成员…"></textarea>
-          <div class="compose-tools"><div class="target"><span aria-hidden="true">@</span><label class="sr-only" for="chat-to">发给</label><select id="chat-to"></select></div>
-            <div class="send-tools"><small class="shortcut" id="send-shortcut" aria-hidden="true"></small><button id="chat-send" type="submit" class="primary" title="发送（⌘/Ctrl + Enter）">发送 <b aria-hidden="true">↑</b></button></div>
+          <div id="mention-list" class="mention-list" role="listbox" aria-label="选择频道成员" hidden></div>
+          <textarea class="resize-none" id="chat-body" rows="2" maxlength="6000" enterkeyhint="send" aria-label="群消息" aria-autocomplete="list" aria-haspopup="listbox" aria-controls="mention-list" aria-describedby="send-shortcut" placeholder="发消息，或输入 @ 选择成员…"></textarea>
+          <div class="compose-tools">
+            <label class="sync-mode" title="仅在频道中同步这条消息，无需成员答复"><input id="sync-only" type="checkbox">仅同步</label>
+            <small class="shortcut" id="send-shortcut">Enter 发送 · Shift + Enter 换行</small>
+            <button id="chat-send" type="submit" class="primary" title="发送（Enter）">发送 <b aria-hidden="true">↑</b></button>
           </div>
         </div><p id="chat-error" class="error" role="alert"></p>
+      </form>
+      <form id="private-composer" class="composer private-composer" novalidate hidden>
+        <div id="private-title-field" hidden>
+          <div class="private-subject">
+            <label for="private-title">私聊标题（选填）</label>
+            <input id="private-title" maxlength="80" autocomplete="off">
+            <button id="private-choose-topic" type="button" aria-haspopup="dialog" disabled>选择频道话题</button>
+          </div>
+          <div id="private-topic-selection" class="private-topic-selection" hidden>
+            <p id="private-topic-name" class="sub" role="status"></p>
+            <button id="private-clear-topic" type="button" class="text-button" disabled>取消关联</button>
+          </div>
+        </div>
+        <div class="editor">
+          <textarea id="private-body" class="resize-none" rows="2" maxlength="6000" enterkeyhint="send"
+            aria-label="私聊消息" aria-describedby="private-error private-shortcut" autocomplete="off"></textarea>
+          <div class="compose-tools"><small id="private-shortcut" class="shortcut">Enter 发送 · Shift + Enter 换行</small>
+            <button id="private-send" class="primary" type="submit">发送私聊 <b aria-hidden="true">↑</b></button>
+          </div>
+        </div>
+        <p id="private-error" class="error" role="alert"></p>
       </form>
     </main>
   </div>
   <div id="notice" class="notice" role="status" aria-live="polite"></div>
   <dialog id="dialog" aria-labelledby="dialog-title"><form id="dialog-form" novalidate>
     <header><h2 id="dialog-title"></h2></header><div id="dialog-body"></div>
-    <div id="dialog-error" class="error" role="alert"></div><footer id="dialog-actions"></footer>
+    <div id="dialog-error" class="error" role="alert"></div>
+    <p id="dialog-status" class="hint" role="status"></p><footer id="dialog-actions"></footer>
   </form></dialog>
   <noscript>请开启浏览器 JavaScript 以使用群聊工作区。</noscript>
 </body></html>

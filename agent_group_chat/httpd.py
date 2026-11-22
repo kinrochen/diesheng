@@ -11,13 +11,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
 from urllib.parse import urlsplit
 
-from .common import Problem, integer, lan_ipv4, origin, string, token
+from .colleague_accounts import MEMBER_ACTIONS, SESSION_LIFETIME
+from .common import Problem, integer, lan_ipv4, origin, string
 from .relay import BROWSER_LIFETIME
 
 ASSETS = files("agent_group_chat").joinpath("static")
 FILES = {"/": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+         "/theme.js": ("theme.js", "text/javascript; charset=utf-8"),
          "/clipboard.js": ("clipboard.js", "text/javascript; charset=utf-8"),
+         "/markdown.js": ("markdown.js", "text/javascript; charset=utf-8"),
+         "/vendor-marked.js": ("vendor-marked.js", "text/javascript; charset=utf-8"),
+         "/vendor-purify.js": ("vendor-purify.js", "text/javascript; charset=utf-8"),
          "/paper-weave.webp": ("paper-weave.webp", "image/webp"),
          "/codex.webp": ("codex.webp", "image/webp"),
          "/claude-code.webp": ("claude-code.webp", "image/webp"),
@@ -25,6 +30,9 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"),
          "/join.js": ("join.js", "text/javascript; charset=utf-8"),
          "/agent.md": ("agent.md", "text/markdown; charset=utf-8"),
          "/codex-listen.py": ("codex-listen.py", "text/plain; charset=utf-8"),
+         "/codex-private.py": ("codex-private.py", "text/plain; charset=utf-8"),
+         "/binding_state.py": ("binding_state.py", "text/plain; charset=utf-8"),
+         "/private-chat.js": ("private-chat.js", "text/javascript; charset=utf-8"),
          "/project-memory.md": ("project-memory.md", "text/markdown; charset=utf-8"),
          "/style.css": ("style.css", "text/css; charset=utf-8"),
          "/favicon.ico": (None, "image/x-icon")}
@@ -33,20 +41,26 @@ FILES = {"/": ("index.html", "text/html; charset=utf-8"),
 class DeliveryNotifications:
     def __init__(self, relay):
         self.relay = relay
-        self.changes = threading.Condition()
+        lock = threading.Lock()
+        self.agent_changes = threading.Condition(lock)
+        self.browser_changes = threading.Condition(lock)
         self.generation = 0
         self.listeners = threading.BoundedSemaphore(64)
         self.browsers = threading.BoundedSemaphore(64)
 
-    def changed(self):
-        with self.changes:
+    def changed(self, *, browser_only=False):
+        with self.browser_changes:
             self.generation += 1
-            self.changes.notify_all()
+            self.browser_changes.notify_all()
+            if not browser_only:
+                self.agent_changes.notify_all()
 
     def wait_for_delivery(self, data, key):
-        self.relay.project("access", {}, key)
-        result = self._wait(data, self.listeners, lambda: self.relay.project("next", data, key),
-                            lambda r: r["delivery"] or r["paused"])
+        access = self.relay.project("access", data, key)
+        if access.get("notice"):
+            return access
+        result = self._wait(data, self.listeners, self.agent_changes, lambda: self.relay.project("next", data, key),
+                            lambda r: r["delivery"] or r["paused"] or r.get("notice"))
         if result["delivery"]:
             self.changed()
         return result
@@ -55,24 +69,24 @@ class DeliveryNotifications:
         if action != "changes":
             return read()
         since = integer(data, "since", low=0)
-        return self._wait(data, self.browsers, read, lambda r: r["revision"] != since)
+        return self._wait(data, self.browsers, self.browser_changes, read, lambda r: r["revision"] != since)
 
-    def _wait(self, data, slots, read, ready):
+    def _wait(self, data, slots, changes, read, ready):
         timeout = min(25, integer(data, "timeout", 20, low=0))
         deadline = time.monotonic() + timeout
         if not slots.acquire(blocking=False):
             raise Problem("当前监听人数较多，请稍后重试", 429)
         try:
             while True:
-                with self.changes:
+                with changes:
                     observed = self.generation
                 result = read()
                 remaining = deadline - time.monotonic()
                 if ready(result) or remaining <= 0:
                     return result
-                with self.changes:
+                with changes:
                     # Recheck periodically for writes from another serving process.
-                    self.changes.wait_for(lambda: self.generation != observed, timeout=min(5, remaining))
+                    changes.wait_for(lambda: self.generation != observed, timeout=min(5, remaining))
         finally:
             slots.release()
 
@@ -125,6 +139,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *_args):
         pass  # Requests may carry invitations. Do not log URLs, headers, or bodies.
+
+    def account_cookie(self, session):
+        secure = "; Secure" if self.server.secure else ""
+        age = SESSION_LIFETIME if session else 0
+        return f"diesheng_account={session}; Max-Age={age}; HttpOnly; SameSite=Strict; Path=/api{secure}"
 
     def send_payload(self, status, body=b"", mime="application/json; charset=utf-8", cookie=None):
         self.send_response(status)
@@ -190,14 +209,26 @@ class Handler(BaseHTTPRequestHandler):
                 gid = parts[2]
                 jar = SimpleCookie(self.headers.get("Cookie", ""))
                 session = jar["diesheng_member"].value if "diesheng_member" in jar else ""
-                if action == "preview" and not re.fullmatch(r"[A-Za-z0-9_-]{40,100}", session):
-                    session = token()
-                result = self.server.deliveries.browser_request(action, data, lambda: relay.web_member(action, gid, data, session))
+                account = jar["diesheng_account"].value if "diesheng_account" in jar else ""
+                if action in ("recover", "recover_preview"):
+                    result, session = relay.recover_member(gid, data, session, preview=action == "recover_preview")
+                elif action in MEMBER_ACTIONS:
+                    result, account_session = relay.member_entry(action,gid,data,session,account)
+                    if account_session is not None:
+                        cookie = self.account_cookie(account_session)
+                else:
+                    result = self.server.deliveries.browser_request(action, data, lambda: relay.web_member(action, gid, data, session, account))
                 suffix = f"; HttpOnly; SameSite=Strict; Path=/api/member/{gid}/" + ("; Secure" if self.server.secure else "")
-                if action in ("preview", "join"):
+                if action == "recover":
                     cookie = f"diesheng_member={session}; Max-Age={BROWSER_LIFETIME}{suffix}"
-                elif action == "leave":
+                elif action in ("leave", "logout", "claim"):
                     cookie = "diesheng_member=; Max-Age=0" + suffix
+            elif scope == "account":
+                jar = SimpleCookie(self.headers.get("Cookie", ""))
+                account = jar["diesheng_account"].value if "diesheng_account" in jar else ""
+                result, account_session = relay.account(action,data,account,self.client_address[0])
+                if account_session is not None:
+                    cookie = self.account_cookie(account_session)
             elif scope == "owner":
                 suffix = "; HttpOnly; SameSite=Strict; Path=/api/owner" + ("; Secure" if self.server.secure else "")
                 if action == "login":
@@ -214,9 +245,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = relay.channel(action, data, key)
             elif scope == "project":
                 result = self.server.deliveries.wait_for_delivery(data, key) if action == "wait" else relay.project(action, data, key)
+            elif scope == "private":
+                result = relay.private_agent(action, data, key)
             else:
                 raise Problem("未知接口", 404)
-            if action in ("speak", "post", "receive", "accept", "fail", "requeue", "pause", "project_pause", "remove", "leave"):
+            if action in ("broadcast", "private-share", "bind-human", "unbind-human", "agent-unbind", "admin-role", "announcement-ack") or (action == "post" and data.get("kind") == "broadcast"):
+                self.server.deliveries.changed(browser_only=True)
+            elif action in ("speak", "group_question", "post", "turn", "receive", "accept", "fail", "requeue", "pause", "project_pause", "remove", "leave", "dissolve", "announcement-publish"):
                 self.server.deliveries.changed()
             self.send_payload(200, json.dumps(result, ensure_ascii=False).encode(), cookie=cookie)
         except Problem as exc:

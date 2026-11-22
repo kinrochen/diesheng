@@ -156,7 +156,7 @@ class Messaging(RelayCase):
         self.assertEqual(a,second["messages"][0]["id"])
         self.assertFalse(second["more"])
 
-    def test_group_isolation_and_sensitive_fields(self):
+    def test_group_isolation_and_local_path_validation(self):
         other=self.relay.owner("create",{"name":"其他"},self.owner)["group"]
         _, key=self.member("后端",other)
         q=self.ask()
@@ -164,10 +164,41 @@ class Messaging(RelayCase):
             self.call(key,"receive",message=q)
         with self.assertRaises(Problem):
             self.call(key,"post",kind="question",request=ident(),target=self.b,body="错群")
-        for text in ("/Users/someone/work/api", "Bearer secret-token-1234567890"):
-            with self.assertRaises(Problem):
+        for text in ("/Users/someone/work/api", r"C:\work\private", "C:/work/private"):
+            with self.assertRaisesRegex(Problem, "本机绝对路径"):
                 self.call(self.ak,"post",kind="broadcast",request=ident(),body=text)
         self.assertEqual([],self.call(key,"history")["messages"])
+
+    def test_old_announcement_receipts_replay_for_agents_md(self):
+        for version in range(2):
+            self.relay.owner("announcement-publish", {"group":self.g, "version":version,
+                             "body":f"规则 {version+1}"}, self.owner)
+        with sqlite3.connect(self.relay.path) as db:
+            db.execute("INSERT INTO announcement_progress VALUES (?,?)", (self.a,2))
+        self.relay = Relay(self.root/"server", BASE, lambda: self.now)
+
+        def receipts():
+            return self.relay.owner("detail", {"group":self.g}, self.owner)["announcement_receipts"]
+
+        self.assertEqual([], receipts())
+        self.assertNotIn("notice", self.call(self.ak, "next", announcements=True))
+        with self.assertRaisesRegex(Problem, "AGENTS.md"):
+            self.call(self.ak, "announcement-ack", version=2, file="agent.md")
+        notice = self.call(self.ak, "context", announcements="AGENTS.md")["notice"]
+        self.assertEqual((2,"AGENTS.md"), (notice["version"],notice["file"]))
+        self.assertEqual(1, self.call(self.bk, "context", announcements="AGENTS.md")["notice"]["version"])
+        self.assertIsNone(self.call(self.ak, "announcement-ack", version=2, file="AGENTS.md")["notice"])
+        self.relay = Relay(self.root/"server", BASE, lambda: self.now)
+        self.assertEqual([self.a], receipts())
+        self.assertNotIn("notice", self.call(self.ak, "context", announcements="AGENTS.md"))
+
+    def test_markdown_links_are_not_mistaken_for_local_paths(self):
+        for body in ("[说明](https://example.com/docs)", "<http://example.com/docs>",
+                     "![示意图](https://example.com/image.png)"):
+            with self.subTest(body=body):
+                message=self.call(self.ak,"post",kind="broadcast",body=body,request=ident())
+                saved=self.call(self.ak,"history")["messages"][-1]
+                self.assertEqual((message["id"],body),(saved["id"],saved["body"]))
 
     def test_challenge_and_presence_are_separate(self):
         def detail():
@@ -195,7 +226,7 @@ class Messaging(RelayCase):
                 origin(u)
 
     def test_lan_addresses_and_existing_invitations(self):
-        for address in ("172.16.8.29", "192.168.4.2", "10.2.1.8"):
+        for address in ("172.23.5.8", "192.168.4.2", "10.2.1.8"):
             self.assertEqual(address, lan_ipv4(address))
         for address in ("127.0.0.1", "localhost", "0.0.0.0", "203.0.113.1", "192.168.1.2:7810"):
             with self.subTest(address=address), self.assertRaises(Problem):
@@ -246,3 +277,124 @@ class Messaging(RelayCase):
         self.assertEqual([discussion],[msg["id"] for msg in detail["history"]["messages"]])
         summary=self.relay.owner("groups",{},self.owner)["groups"][0]
         self.assertEqual(("host",send["body"]),(summary["last_agent"],summary["last_body"]))
+
+    def test_selected_members_answer_one_public_topic_independently(self):
+        _, observer = self.member("旁观")
+        fields = {"group": self.g, "body": "@前端 @后端 请分别确认", "request": ident(),
+                  "targets": [self.a, self.b, self.a]}
+        topic = self.relay.owner("group_question", fields, self.owner)["id"]
+        def history():
+            return self.relay.owner("history", {"group": self.g, "topic": topic}, self.owner)["messages"]
+        def receipts():
+            return [(r["member"], r["status"]) for r in history()[0]["recipients"]]
+
+        self.assertEqual(["group_question"], [m["kind"] for m in history()])
+        self.assertEqual([(self.a, "pending"), (self.b, "pending")], receipts())
+        first = self.next_delivery(self.ak)
+        self.assertEqual(topic, first["topic"])
+        self.assertEqual([(self.a, "received"), (self.b, "pending")], receipts())
+        self.assertIsNone(self.next_delivery(observer))
+        self.assertEqual([], self.call(observer, "inbox")["messages"])
+        with self.assertRaises(Problem):
+            self.call(observer, "receive", message=first["id"])
+        reply = dict(kind="answer", parent=first["id"], ticket=first["ticket"], body="前端已确认", request=ident())
+        answer = self.call(self.ak, "post", **reply)
+        self.assertEqual(answer, self.call(self.ak, "post", **reply))
+        self.assertEqual(topic, answer["topic"])
+        self.assertEqual([(self.a, "replied"), (self.b, "pending")], receipts())
+
+        self.now += ONLINE + 1
+        self.relay = Relay(self.root / "server", BASE, lambda: self.now)
+        second = self.next_delivery(self.bk, "重连")
+        self.assertNotEqual(first["id"], second["id"])
+        self.assertEqual(topic, second["topic"])
+        self.answer(second["id"], "重连")
+        self.assertEqual([(self.a, "replied"), (self.b, "replied")], receipts())
+        self.assertEqual([("group_question", topic), ("answer", topic), ("answer", topic)],
+                         [(m["kind"], m["topic"]) for m in self.call(observer, "history")["messages"]])
+
+    def test_group_question_validates_all_targets_and_retries_atomically(self):
+        other = self.relay.owner("create", {"name": "其他频道"}, self.owner)["group"]
+        foreign, _ = self.member("其他成员", other)
+        left, _ = self.member("已退出")
+        self.relay.owner("remove", {"group": self.g, "member": left}, self.owner)
+        sender, sender_key = self.member("提问项目")
+        fields = dict(kind="group_question", body="请一起核对", request=ident())
+        for targets in ([], self.a, [None], [self.a, sender], [self.a, left], [self.a, foreign]):
+            with self.subTest(targets=targets), self.assertRaises(Problem):
+                self.call(sender_key, "post", **fields, targets=targets)
+        self.assertEqual([], self.call(self.ak, "history")["messages"])
+        self.assertIsNone(self.next_delivery(self.ak))
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            results = list(pool.map(lambda ids: self.call(sender_key, "post", **fields, targets=ids),
+                                    ([self.a, self.b], [self.b, self.a, self.a])))
+        self.assertEqual(results[0], results[1])
+        with self.assertRaisesRegex(Problem, "请求编号"):
+            self.call(sender_key, "post", **fields, targets=[self.b])
+        self.relay.owner("remove", {"group": self.g, "member": self.a}, self.owner)
+        self.assertEqual(results[0], self.call(sender_key, "post", **fields, targets=[self.a, self.b]))
+        root, = self.call(sender_key, "history")["messages"]
+        self.assertEqual({self.a: "cancelled", self.b: "pending"}, {r["member"]: r["status"] for r in root["recipients"]})
+
+    def test_web_broadcast_with_mentions_only_updates_timeline(self):
+        fields = {"group": self.g, "body": "@前端 @后端 今天十点发布", "request": ident()}
+        rev = self.relay.owner("changes", {"group": self.g}, self.owner)["revision"]
+        posted = self.relay.owner("broadcast", fields, self.owner)
+        self.assertEqual(posted, self.relay.owner("broadcast", fields, self.owner))
+        self.assertGreater(self.relay.owner("changes", {"group": self.g}, self.owner)["revision"], rev)
+        for key in (self.ak, self.bk):
+            self.assertIsNone(self.next_delivery(key))
+            self.assertEqual([], self.call(key, "inbox")["messages"])
+            note, = self.call(key, "history")["messages"]
+            self.assertEqual((posted["id"], "broadcast", None, "recorded"),
+                             (note["id"], note["kind"], note["target"], note["receipt"]))
+        with self.assertRaisesRegex(Problem, "请求编号"):
+            self.relay.owner("group_question", {**fields, "targets": [self.a, self.b]}, self.owner)
+
+    def test_personal_history_filters_before_paging_and_can_open_the_whole_topic(self):
+        _, spectator_key = self.member("旁听")
+        host = self.relay.owner("detail", {"group": self.g}, self.owner)["self"]
+        def personal(**fields):
+            return self.relay.owner("history", {"group": self.g, "scope": "mine", **fields}, self.owner)
+        root = self.call(self.ak, "post", kind="group_question", targets=[host, self.b],
+                         body="验收窗口分别确认", request=ident())["id"]
+        branch = self.next_delivery(self.bk, "B")
+        sibling = self.answer(branch["id"], "B")
+        for i in range(45):
+            self.call(self.bk, "post", kind="broadcast", body=f"无关进度 {i}", request=ident())
+        direct = self.call(self.ak, "post", kind="question", target=host, body="验收窗口请群主确认", request=ident())["id"]
+        answer = self.relay.owner("speak", {"group": self.g, "parent": direct, "body": "验收窗口已确认", "request": ident()}, self.owner)["id"]
+        sent = self.relay.owner("speak", {"group": self.g, "body": "我发起的讨论", "request": ident()}, self.owner)["id"]
+        follow = self.call(self.ak, "post", kind="followup", parent=answer, body="请提供依据", request=ident())["id"]
+        self.assertEqual([root, direct, answer, sent, follow], [m["id"] for m in personal()["messages"]])
+        first = personal(query="验收窗口", limit=2)
+        self.assertTrue(first["more"])
+        self.assertEqual([direct, answer], [m["id"] for m in first["messages"]])
+        earlier = personal(query="验收窗口", limit=2, before=direct)
+        self.assertFalse(earlier["more"])
+        self.assertEqual([root], [m["id"] for m in earlier["messages"]])
+        self.assertEqual([follow], [m["id"] for m in personal(after=sent)["messages"]])
+        self.assertEqual([root, sibling], [m["id"] for m in self.relay.owner("history", {"group": self.g, "topic": root}, self.owner)["messages"]])
+        self.assertEqual([], self.call(spectator_key, "history", scope="mine", viewer=host, member=self.a)["messages"])
+
+    def test_quiet_mentions_keep_member_identity_without_creating_a_delivery(self):
+        _, spectator_key = self.member("旁听")
+        foreign_group = self.relay.owner("create", {"name": "其他频道"}, self.owner)["group"]
+        foreign, foreign_key = self.member("其他成员", foreign_group)
+        payload = {"group": self.g, "body": "@后端 验收结果", "request": ident()}
+        legacy = self.relay.owner("broadcast", payload, self.owner)["id"]
+        note = {**payload, "request": ident(), "mentions": [self.b, self.b, foreign]}
+        posted = self.relay.owner("broadcast", note, self.owner)
+        self.assertEqual(posted, self.relay.owner("broadcast", {**note, "mentions": [foreign, self.b]}, self.owner))
+        with self.assertRaisesRegex(Problem, "请求编号"):
+            self.relay.owner("broadcast", {**note, "mentions": []}, self.owner)
+        self.call(self.bk, "profile", name="发布负责人", role="验收")
+        self.call(spectator_key, "profile", name="后端", role="旁听")
+        self.assertEqual([posted["id"]], [m["id"] for m in self.call(self.bk, "history", scope="mine")["messages"]])
+        self.assertEqual([], self.call(spectator_key, "history", scope="mine")["messages"])
+        self.assertEqual([], self.call(foreign_key, "history", scope="mine")["messages"])
+        self.assertIsNone(self.next_delivery(self.bk))
+        self.assertEqual([], self.call(self.bk, "inbox")["messages"])
+        self.assertEqual([legacy, posted["id"]], [m["id"] for m in self.call(self.bk, "history")["messages"]])
+        with sqlite3.connect(self.relay.path) as db:
+            self.assertEqual([(self.b,)], db.execute("SELECT member FROM message_mentions WHERE mid=?", (posted["id"],)).fetchall())

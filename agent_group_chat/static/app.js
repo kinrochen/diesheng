@@ -12,6 +12,7 @@ const views = {history:'对话', announcement:'公告', topics:'话题', private
 const liveChannelViews = ['history','announcement','topics'];
 const topicKinds = {question:'定向提问',group_question:'多人提问',discussion:'全体讨论',collaboration:'Agent 协作',chat:'成员发言'};
 const topicStates = {pending:'待答复',active:'进行中',answered:'已答复',attention:'需关注',cancelled:'已停止',recorded:'已记录'};
+const inboxStates = {pending:'待处理',processing:'处理中'};
 const clients = {
   codex: {name:'Codex', icon:'/codex.webp'},
   claude: {name:'Claude Code', icon:'/claude-code.webp'},
@@ -19,7 +20,7 @@ const clients = {
 };
 let searchOpen = false, navSnapshot = '';
 const mobile = matchMedia('(max-width: 700px)');
-const state = {groups:[], group:null, view:'history', topic:null, data:null, publicUrl:null,
+const state = {groups:[], group:null, view:'history', topic:null, message:null, data:null, publicUrl:null,
   page:null, query:'', scope:'all', category:'', topicStatus:'', before:null, privateRoute:null,
   serial:0, error:'', logged:false, self:null, username:null};
 const canManageChannel = () => !room || Boolean(state.data?.can_manage ?? state.group?.can_manage);
@@ -446,7 +447,7 @@ function showLogin(memberNotice='') {
 async function requestApi(scope,name,data,signal) {
   const options={method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},
     body:JSON.stringify(data),signal};
-  let retry=['groups','detail','history','topics','private-list','private-read','private-topics','recover_preview','recover','legacy_status','logout'].includes(name);
+  let retry=['groups','detail','history','topics','inbox','private-list','private-read','private-topics','recover_preview','recover','legacy_status','logout'].includes(name);
   for (;;) {
     let resp, result;
     try {
@@ -663,10 +664,11 @@ function preferredScope(group) {
   const key=feedPreferenceKey(group);
   try { return key && localStorage.getItem(key)==='mine'?'mine':'all'; } catch { return 'all'; }
 }
-function url(g, view='history', topic=null, query='', scope='') {
+function url(g, view='history', topic=null, query='', scope='', message=null) {
   const params=new URLSearchParams();
   if (query) params.set('q',query);
   if (scope && view==='history') params.set('scope',scope);
+  if (message) params.set('message',message);
   const search=params.toString();
   return '#/'+g+'/'+view+(topic ? '/'+topic : '')+(search?'?'+search:'');
 }
@@ -684,6 +686,7 @@ function openRoute(hash,entry=null) {
 }
 function activateRoute() {
   stopLiveView();
+  if (dialog.open && dialog.querySelector('.inbox-content')) dialog.close();
   const next=roomFromPath();
   if (room && next && next!==room) {
     room=next; memberRoomsChecked=-Infinity; memberRoomsRequest++;
@@ -744,8 +747,18 @@ function listeningLabel(member) {
   if (!member.online) return '离线';
   return member.automatic?'正在监听':'在线 · 待监听';
 }
+function inboxSummary(members) {
+  return node('section',{class:'inbox-summary'},node('h3',{},'项目收件箱'),
+    ...Object.entries(inboxStates).map(([status,label])=>{
+      const count=members.reduce((sum,member)=>sum+member[status],0);
+      return node('button',{type:'button',class:'inbox-trigger','data-action':'open-inbox','data-id':status,
+        'aria-haspopup':'dialog','aria-label':'查看'+label+'任务，'+count+' 项'},
+        node('b',{},String(count)),node('span',{},label),node('i',{'aria-hidden':'true'},'›'));
+    }));
+}
 function inspector(members) {
   const roster=$('roster'), online=members.filter(m=>m.online).length;
+  const focusedInbox=document.activeElement?.closest('#roster .inbox-trigger')?.dataset.id;
   roster.replaceChildren(node('div',{class:'roster-title'},node('h2',{},'频道成员'),node('span',{class:'count'},String(members.length))),
     node('p',{class:'roster-summary'},node('i',{class:online?'dot online':'dot'}),online+' 位在线'));
   for (const m of members) {
@@ -757,9 +770,9 @@ function inspector(members) {
     roster.append(node('div',{class:'roster-member'},card,privateChat.memberLink(state.group.id,m,true)));
   }
   if (!members.length) roster.append(node('p',{class:'muted'},'Agent 加入后会显示在这里。'));
-  roster.append(node('div',{class:'inbox-summary'},node('h3',{},'项目收件箱'),
-    node('div',{},node('span',{},'待处理'),node('b',{},String(members.reduce((n,m)=>n+m.pending,0)))),
-    node('div',{},node('span',{},'处理中'),node('b',{},String(members.reduce((n,m)=>n+m.processing,0))))));
+  const summary=inboxSummary(members);
+  roster.append(summary);
+  if (focusedInbox) summary.querySelector('[data-id="'+focusedInbox+'"]')?.focus({preventScroll:true});
 }
 function msgEntry(m) {
   const self=room?state.self?.id:state.data.self;
@@ -788,7 +801,9 @@ function msgEntry(m) {
   }
   const receipts=groupQuestion?node('ul',{class:'recipient-receipts','aria-label':'成员回执'},...people.map(p=>
     node('li',{},'@'+p.name+' · '+(recipientCaptions[p.status] || p.status)))):null;
-  return node('article',{class:'chat-row'+(own?' own':''),'data-message':m.id},avatar(m.author,m.author_agent),
+  const located=m.id===state.message;
+  return node('article',{class:'chat-row'+(own?' own':'')+(located?' message-located':''),'data-message':m.id,
+    tabindex:located?'-1':null},avatar(m.author,m.author_agent),
     node('div',{class:'chat-content'},node('div',{class:'chat-byline'},node('strong',{},own?'我':m.author),node('span',{class:'client-label'},clientName(m.author_agent)),
       myAgent?chip('我的 Agent','info'):null,
       audience?node('span',{class:'to'},audience):null,timestamp(m.created)),
@@ -876,7 +891,9 @@ function panel() {
     const from=window.history.state?.feedHash, list=url(g.id,'history');
     const fromList=typeof from==='string' && (from===list || from.startsWith(list+'?'));
     const back=fromList?from:url(g.id,'history',null,'',state.scope);
-    head.append(thread?node('a',{href:topicUrl(g.id)},'返回话题列表'):node('a',{href:back},'返回群记录'));
+    head.append(node('div',{class:'topic-navigation'},
+      state.message?node('a',{href:url(g.id,'history',state.topic,'',state.scope)},'查看完整话题'):null,
+      thread?node('a',{href:topicUrl(g.id)},'返回话题列表'):node('a',{href:back},'返回群记录')));
   }
   if (state.topic) part.append(head);
   if (listing) part.append(topicFilters(g.id));
@@ -911,6 +928,7 @@ function panel() {
     const map=new Map([...previous,...history.messages].map(m=>[m.id,m]));
     const messages=[...map.values()].sort((a,b)=>a.id-b.id);
     const list=node('div',{class:'chat-log',role:'log','aria-label':'群消息记录',tabindex:'0'});
+    if (state.message && !map.has(state.message)) list.append(node('p',{class:'hint'},'原消息当前不可见，可能已超过保留期。'));
     if (more ?? history.more) list.append(node('div',{class:'load'},action('查看更早消息','older')));
     let lastDay='';
     for (const message of messages) {
@@ -943,6 +961,7 @@ function panel() {
     part.append(announcement?.body?node('article',{class:'announcement-body'},markdownBody(announcement.body)):
       node('p',{class:'muted announcement-body'},'暂无群公告'));
   } else if (view==='members') {
+    part.append(inboxSummary(d.members));
     part.append(...d.members.map(memberEntry));
     if (!d.members.length) part.append(empty('等待项目加入','生成邀请后，让同事在目标项目的 Agent 会话中确认接入。'));
   } else if (!canManageChannel()) {
@@ -1026,7 +1045,11 @@ function restorePosition(s) {
   const log=s.panel.querySelector('.chat-log');
   if (log) {
     const pos=s.reading.position;
-    if (!pos || pos.pinned) log.scrollTop=log.scrollHeight;
+    const located=!pos && state.message && log.querySelector('.message-located');
+    if (located) {
+      log.scrollTop+=located.getBoundingClientRect().top-log.getBoundingClientRect().top-8;
+      located.focus({preventScroll:true});
+    } else if (!pos || pos.pinned) log.scrollTop=log.scrollHeight;
     else {
       const anchor=pos.id && log.querySelector('[data-message="'+pos.id+'"]');
       log.scrollTop=anchor?log.scrollTop+anchor.getBoundingClientRect().top-log.getBoundingClientRect().top-pos.offset:pos.scroll;
@@ -1052,7 +1075,7 @@ function render() {
   const content=view==='announcement'?[Boolean(d),d?.announcement,d?.announcement_receipts,d?.members.map(m=>[m.id,m.name,m.agent])]:
     view==='members'?[d?.members,d?.paused]:view==='invites'?[d?.invites,d?.link_expires]:
     [page.history,page.older,page.more,page.directory,page.private,d?.members.length,searchOpen];
-  const signature=JSON.stringify([view,canManageChannel(),state.topic,state.query,state.scope,state.category,state.topicStatus,
+  const signature=JSON.stringify([view,canManageChannel(),state.topic,state.message,state.query,state.scope,state.category,state.topicStatus,
     state.before,state.privateRoute?.hash,state.error,content]);
   if (signature!==s.signature) rememberPosition(s);
   updateChannelShell(s,g,d);
@@ -1068,10 +1091,11 @@ function render() {
     const panelKey=view==='history'?pageKey(view,state.scope):view;
     const base=!privateView && !state.topic && !state.query, cached=base && s.panels.get(panelKey);
     const next=privateView?privateChat.panel():cached && cached.signature===signature?cached.panel:panel();
-    const route=privateView?state.privateRoute.hash:view==='topics'?topicUrl(g.id,state.topic):url(g.id,view,state.topic,state.query,state.scope);
+    const route=privateView?state.privateRoute.hash:view==='topics'?topicUrl(g.id,state.topic):url(g.id,view,state.topic,state.query,state.scope,state.message);
     const form=s.route===route && s.panel.querySelector('.search-form,.topic-filters'), nextForm=next.querySelector('.search-form,.topic-filters');
     const editing=form && form.contains(document.activeElement)?document.activeElement:null;
     const focusedScope=document.activeElement?.closest('.feed-scope a')?.dataset.feedScope;
+    const focusedInbox=document.activeElement?.closest('.inbox-trigger')?.dataset.id;
     const previousReceipts=s.route===route && s.panel.querySelector('.announcement-receipts');
     const nextReceipts=next.querySelector('.announcement-receipts');
     const focusedReceipts=previousReceipts && previousReceipts.contains(document.activeElement);
@@ -1087,6 +1111,7 @@ function render() {
     else if (focusSearch) $('query')?.focus({preventScroll:true});
     else if (focusedReceipts) nextReceipts?.querySelector('summary').focus({preventScroll:true});
     else if (focusedScope) next.querySelector('.feed-scope [data-feed-scope="'+focusedScope+'"]')?.focus({preventScroll:true});
+    else if (focusedInbox && view==='members') next.querySelector('.inbox-trigger[data-id="'+focusedInbox+'"]')?.focus({preventScroll:true});
     focusSearch=false;
   }
 }
@@ -1126,6 +1151,9 @@ function selectRoute(g,tab,topic,params) {
   const cursor=Number(search.get('before'));
   const before=view==='topics' && Number.isSafeInteger(cursor) && cursor>0?cursor:null;
   const query=view==='history'?(search.get('q') || '').slice(0,160):'';
+  const messageId=Number(search.get('message'));
+  const message=view==='history' && filter && !query && Number.isSafeInteger(messageId) && messageId>0 &&
+    messageId<Number.MAX_SAFE_INTEGER?messageId:null;
   let scope='all';
   if (view==='history' && g) {
     const requested=tab==='conclusions'?'all':search.get('scope');
@@ -1133,7 +1161,7 @@ function selectRoute(g,tab,topic,params) {
     if (!filter && (tab!==view || requested!==scope)) history.replaceState(history.state,'',url(g.id,view,null,query,scope));
   }
   const groupChanged=g?.id!==state.group?.id;
-  const changed=groupChanged || view!==state.view || filter!==state.topic || query!==state.query || scope!==state.scope ||
+  const changed=groupChanged || view!==state.view || filter!==state.topic || message!==state.message || query!==state.query || scope!==state.scope ||
     category!==state.category || status!==state.topicStatus || before!==state.before || privateRoute?.hash!==state.privateRoute?.hash;
   if (groupChanged) { pages.clear(); state.data=null; }
   if (groupChanged || state.view!==view) { searchOpen=false; focusSearch=false; }
@@ -1142,7 +1170,7 @@ function selectRoute(g,tab,topic,params) {
     state.page=g?channelPage(view,filter,query,view==='topics'?category+'/'+status+'/'+(before || ''):scope):null;
     state.error='';
   }
-  state.group=g; state.view=view; state.topic=filter; state.query=query; state.scope=scope;
+  state.group=g; state.view=view; state.topic=filter; state.message=message; state.query=query; state.scope=scope;
   state.category=category; state.topicStatus=status; state.before=before;
   state.privateRoute=privateRoute;
   nav();
@@ -1201,7 +1229,7 @@ async function refresh(mode) {
     selectRoute(g,withinRoom?tab:null,withinRoom?topic:null,withinRoom?params:null);
     if (room) void refreshMemberRooms();
     if (!g) return;
-    const {view,topic:filter,query,page}=state;
+    const {view,topic:filter,message,query,page}=state;
     if (view==='private') {
       const route=state.privateRoute;
       const data=await privateChat.load(g.id,route);
@@ -1224,7 +1252,8 @@ async function refresh(mode) {
     const scope=view==='history' && !filter?state.scope:'all';
     const listing=view==='topics' && !filter;
     const criteria=listing?{directory:true,category:state.category,status:state.topicStatus,before:state.before}:{};
-    const {history:result,directory,...details}=await api('detail',{group:g.id,topic:filter,query,scope,...criteria});
+    const {history:result,directory,...details}=await api('detail',{
+      group:g.id,topic:filter,query,scope,...criteria,...(message?{before:message+1}:{})});
     if (id!==state.serial) return;
     if (listing && !Array.isArray(directory?.topics)) throw new Error('当前服务尚未启用话题列表。');
     state.data=details; state.error='';
@@ -1301,6 +1330,60 @@ function openDialog(title,children,handler,label,destructive=false,trigger=docum
   if (handler) $('dialog-actions').append(node('button',{type:'submit',class:destructive?'danger':'primary'},label));
   if (!dialog.open) dialog.showModal();
   (destructive?cancel:$('dialog-body').querySelector('input,textarea,button') || cancel).focus();
+}
+function openInbox(status,trigger) {
+  const group=state.group.id, scope=state.scope, label=inboxStates[status];
+  const list=node('ul',{class:'inbox-list','aria-label':label+'任务'});
+  const feedback=node('p',{class:'inbox-feedback hint',role:'status'});
+  const more=node('button',{type:'button',hidden:''},'查看更早任务');
+  const footer=node('div',{class:'inbox-pagination'},feedback);
+  const content=node('div',{class:'inbox-content'},list,footer);
+  let before=null, request=null;
+  const isOpen=()=>dialog.open && content.isConnected && state.group?.id===group;
+  async function load() {
+    if (request) return;
+    const controller=new AbortController();
+    request=controller;
+    const timer=setTimeout(()=>controller.abort(),12000);
+    list.setAttribute('aria-busy','true');
+    more.setAttribute('aria-disabled','true');
+    feedback.className='inbox-feedback hint'; feedback.textContent='正在读取任务…';
+    try {
+      const result=await api('inbox',{group,status,before},controller.signal);
+      if (!isOpen()) return;
+      if (!Array.isArray(result.items)) throw new Error('任务明细接收不完整，请重试。');
+      const rows=result.items.map(item=>{
+        const receipt=item.receipt==='uncertain'?'超时需确认':recipientCaptions[item.receipt] || item.receipt;
+        const meta=node('span',{class:'inbox-meta'},node('span',{},kinds[item.kind]),
+          node('span',{},item.author+' → '+item.recipient),timestamp(item.created,true));
+        const text=node('span',{class:'inbox-item-text'},node('strong',{class:'inbox-preview'},item.body),meta);
+        const link=node('a',{class:'inbox-item',href:url(group,'history',item.topic,'',scope,item.message),'data-open-topic':'true'},
+          text,chip(receipt,status==='pending'?'warn':'info'),node('span',{class:'inbox-chevron','aria-hidden':'true'},'›'));
+        return node('li',{},link);
+      });
+      list.append(...rows);
+      feedback.classList.toggle('sr-only',rows.length>0);
+      feedback.textContent=rows.length?'已显示 '+list.childElementCount+' 项任务。':
+        before?'没有更早的任务。':'暂无'+label+'任务。';
+      if (rows.length) {
+        before=result.items.at(-1).id;
+        if (document.activeElement===more) rows[0].firstElementChild.focus();
+      } else if (document.activeElement===more) $('dialog-actions').querySelector('button').focus();
+      more.textContent='查看更早任务'; more.hidden=!result.more;
+    } catch (error) {
+      if (!isOpen()) return;
+      feedback.className='inbox-feedback error'; feedback.textContent=error.message;
+      more.textContent='重试'; more.hidden=false;
+    } finally {
+      clearTimeout(timer); request=null;
+      list.removeAttribute('aria-busy'); more.removeAttribute('aria-disabled');
+    }
+  }
+  openDialog('项目收件箱 · '+label,[content],null,undefined,false,trigger);
+  footer.append(more);
+  more.addEventListener('click',load);
+  dialog.addEventListener('close',()=>request?.abort(),{once:true});
+  void load();
 }
 function tryClose() {
   if (!busy || !submitDialog) dialog.close();
@@ -1541,6 +1624,7 @@ async function handle(button) {
     }
     case 'close': tryClose(); break;
     case 'retry': await refresh(); break;
+    case 'open-inbox': openInbox(id,button); break;
     case 'edit-announcement':
       if (canManageChannel() && state.data) editAnnouncement(g.id,button);
       break;
@@ -1738,6 +1822,7 @@ document.addEventListener('click',async e=>{
         try { localStorage.setItem(key,link.dataset.feedScope); } catch {}
       }
     }
+    if (link.hash===location.hash && link.closest('.inbox-list')) dialog.close();
     openRoute(link.hash,link.dataset.openTopic?{feedHash:location.hash}:null); return;
   }
   const btn=e.target.closest('button[data-action]');

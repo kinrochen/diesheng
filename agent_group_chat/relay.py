@@ -21,6 +21,10 @@ BROWSER_LIFETIME = 30 * 86400
 RECOVERY_LINK_LIFETIME = 30 * 60
 RECOVERY_RETRY = 5 * 60
 WEB_CLIENTS = {"codex": "Codex", "claude": "Claude Code", "deepseek": "DeepSeek Harness"}
+INBOX_FILTERS = {
+    "pending": "d.status IN ('pending','uncertain','manual','failed')",
+    "processing": "(d.status IN ('waiting','reviewing') OR d.status='received' AND msg.kind IN ('question','followup'))",
+}
 
 
 class Relay:
@@ -140,6 +144,8 @@ class Relay:
                 return self._browser_detail(db, self._host(db, group, now), data, now, can_manage=True)
             if action == "topics":
                 return list_topics(db, gid, 0, data)
+            if action == "inbox":
+                return self._browser_inbox(db, gid, data, include_host=False)
             if action == "history":
                 viewer = self._host(db, group, now)["id"] if data.get("scope") == "mine" else None
                 return self._history(db, gid, 0, data, viewer=viewer)
@@ -437,6 +443,8 @@ class Relay:
                         "username":account["username"] if account else None}
             if action == "topics":
                 return list_topics(db, gid, 0, data)
+            if action == "inbox":
+                return self._browser_inbox(db, gid, data, include_host=True)
             if action == "history":
                 return self._history(db, gid, 0, data, viewer=member["id"])
             if action in ("speak", "group_question", "broadcast"):
@@ -639,21 +647,38 @@ class Relay:
 
     @staticmethod
     def _members(db, gid, now, *, include_host=False, viewer=None):
-        return rows(db.execute("""SELECT m.id,m.name,m.agent,m.role,m.joined,m.verified,m.paused,
+        return rows(db.execute(f"""SELECT m.id,m.name,m.agent,m.role,m.joined,m.verified,m.paused,
             EXISTS(SELECT 1 FROM colleague_memberships c WHERE c.member=m.id) AS has_account,
             EXISTS(SELECT 1 FROM channel_admins a WHERE a.member=m.id) AS admin,
             CASE WHEN m.agent IN ('host','human') OR ? IS NULL THEN NULL
                  WHEN b.human=? THEN 'mine' WHEN b.human IS NULL THEN 'unbound' ELSE 'bound' END AS human_binding,
             coalesce(m.seen>?,0) AS online, coalesce(m.auto_seen>?,0) AS automatic,
             (SELECT count(*) FROM sessions s WHERE s.member=m.id AND s.seen>?) AS sessions,
-            (SELECT count(*) FROM deliveries d WHERE d.member=m.id AND status IN
-                ('pending','uncertain','manual','failed')) AS pending,
+            (SELECT count(*) FROM deliveries d WHERE d.member=m.id AND {INBOX_FILTERS['pending']}) AS pending,
             (SELECT count(*) FROM deliveries d JOIN messages msg ON msg.id=d.mid
-                WHERE d.member=m.id AND (d.status IN ('waiting','reviewing') OR
-                    d.status='received' AND msg.kind IN ('question','followup'))) AS processing
+                WHERE d.member=m.id AND {INBOX_FILTERS['processing']}) AS processing
             FROM members m LEFT JOIN agent_bindings b ON b.agent=m.id
             WHERE m.gid=? AND m.active=1 AND (m.agent!='host' OR ?) ORDER BY m.joined,m.id""",
                                (viewer, viewer, now-ONLINE, now-ONLINE, now-ONLINE, gid, include_host)))
+
+    @staticmethod
+    def _browser_inbox(db, gid, data, *, include_host):
+        status = string(data, "status", 20)
+        if status not in INBOX_FILTERS:
+            raise Problem("请选择待处理或处理中")
+        limit = min(100, integer(data, "limit", 20))
+        before = integer(data, "before") if data.get("before") is not None else None
+        items = rows(db.execute(f"""SELECT msg.id,msg.kind,substr(msg.body,1,240) AS body,msg.created,
+            author.name AS author,recipient.name AS recipient,d.status AS receipt,
+            coalesce(branch.discussion,msg.topic) AS topic,
+            CASE WHEN branch.question=msg.id THEN branch.discussion ELSE msg.id END AS message
+            FROM deliveries d JOIN messages msg ON msg.id=d.mid
+            JOIN members author ON author.id=msg.sender JOIN members recipient ON recipient.id=d.member
+            LEFT JOIN discussion_mail branch ON branch.question=msg.topic
+            WHERE msg.gid=? AND recipient.active=1 AND (? OR recipient.agent!='host')
+              AND (? IS NULL OR msg.id<?) AND {INBOX_FILTERS[status]}
+            ORDER BY msg.id DESC LIMIT ?""", (gid, include_host, before, before, limit+1)))
+        return {"items": items[:limit], "more": len(items)>limit}
 
     def channel(self, action, data, key=""):
         """Preview or redeem a channel link within one transaction."""

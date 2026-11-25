@@ -14,7 +14,7 @@ from uuid import uuid4
 
 from agent_group_chat.common import digest, token, transaction
 from agent_group_chat.httpd import RelayHTTP
-from agent_group_chat.relay import BROWSER_LIFETIME, RECOVERY_LINK_LIFETIME, RECOVERY_RETRY
+from agent_group_chat.relay import BROWSER_LIFETIME, RECOVERY_LINK_LIFETIME, RECOVERY_RETRY, RESPONSE_TIMEOUT
 from tests.support import RelayCase, temp_certificate
 
 
@@ -70,6 +70,57 @@ class HTTPS(RelayCase):
                 self.assertIn(('src="/'+name+'"').encode(),index)
         self.assertLess(index.index(b"/vendor-marked.js"),index.index(b"/markdown.js"))
         self.assertLess(index.index(b"/markdown.js"),index.index(b"/app.js"))
+
+    def test_browser_inbox_matches_counts_and_public_messages(self):
+        group = {"group": self.g}
+        owner = {"Authorization": "Bearer "+self.owner}
+        _, colleague = self.legacy_colleague(self.g, "协作同事")
+
+        def inbox(status, **filters):
+            code, _, raw = self.request("/api/owner/inbox", {**group,"status":status,**filters}, **owner)
+            self.assertEqual(200, code, raw)
+            return json.loads(raw)
+
+        question = self.ask()
+        self.assertEqual(question, self.next_delivery(self.bk, "B")["id"])
+        root = self.relay.owner("group_question", {**group,"targets":[self.a,self.b],
+                                "body":"请分别确认发布安排","request":"release"}, self.owner)["id"]
+        branch = self.next_delivery(self.ak, "A")["id"]
+        latest = self.ask()
+        other = self.relay.owner("create", {"name":"其他频道"}, self.owner)["group"]
+        other_recipient, _ = self.member("群外接收方", other)
+        self.relay.owner("speak", {"group":other,"target":other_recipient,
+                         "body":"其他频道的请求","request":"unrelated"}, self.owner)
+
+        page = inbox("pending", limit=1)
+        self.assertTrue(page["more"])
+        self.assertEqual([latest], [item["id"] for item in page["items"]])
+        other_branch, = inbox("pending", before=latest)["items"]
+        self.assertEqual((root,root,"后端","pending"),
+                         (other_branch["topic"],other_branch["message"],other_branch["recipient"],other_branch["receipt"]))
+        processing = inbox("processing")["items"]
+        self.assertEqual([(branch,root),(question,question)], [(item["id"],item["message"]) for item in processing])
+        self.assertTrue(all("ticket" not in item and "sid" not in item for item in processing))
+
+        reply = self.answer(question, "B")
+        pending = inbox("pending")["items"]
+        self.assertEqual((reply,"answer","pending"), (pending[0]["id"],pending[0]["kind"],pending[0]["receipt"]))
+        processing = inbox("processing")["items"]
+        self.assertEqual([branch], [item["id"] for item in processing])
+        members = self.relay.owner("detail", group, self.owner)["members"]
+        self.assertEqual((len(pending),len(processing)), tuple(sum(m[key] for m in members) for key in ("pending","processing")))
+
+        path = f"/api/member/{self.g}/inbox"
+        code, _, raw = self.request(path, {"status":"processing"}, **colleague)
+        self.assertEqual(200, code, raw)
+        self.assertEqual(processing, json.loads(raw)["items"])
+        self.assertEqual(403, self.request(path, {"group":other,"status":"pending"}, **colleague)[0])
+        self.assertEqual(401, self.request(path, {"status":"pending"})[0])
+
+        self.now += RESPONSE_TIMEOUT + 1
+        self.assertEqual([], inbox("processing")["items"])
+        timed_out = next(item for item in inbox("pending")["items"] if item["id"] == branch)
+        self.assertEqual("uncertain", timed_out["receipt"])
 
     def test_shared_link_three_clients_and_wait(self):
         cookie=self.request("/api/owner/login",{"key":self.owner})[1]["Set-Cookie"].split(";")[0]

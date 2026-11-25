@@ -547,6 +547,79 @@ async function checkTopicDirectory(page,group,rpc,front,qa) {
   await page.getByRole('link',{name:'对话',exact:true}).click();
 }
 
+async function checkProjectInbox(context,origin,rpc) {
+  const {group}=await rpc('owner','create',{name:'收件箱验证'});
+  const page=await context.newPage();
+  try {
+    await page.setViewportSize({width:1320,height:820});
+    const link=await rpc('owner','channel_link',{group});
+    const code=link.url.split('#c=')[1];
+    const frontKey=randomBytes(32).toString('hex');
+    const front=await rpc('channel','join',{code,agent:'codex',name:'项目甲'},frontKey);
+    const back=await rpc('channel','join',{code,agent:'claude',name:'项目乙'},randomBytes(32).toString('hex'));
+    const body='请分别核对发布窗口。';
+    const root=await rpc('owner','group_question',{group,targets:[front.member,back.member],body,request:'inbox-fanout'});
+    for (let i=1;i<=21;i++) {
+      await rpc('owner','speak',{group,target:back.member,body:'独立核对任务 '+i,request:'inbox-'+i});
+    }
+    await page.goto(origin+'/#/'+group+'/history');
+    await page.getByRole('heading',{name:'收件箱验证',exact:true}).waitFor();
+    const roster=page.getByRole('complementary',{name:'频道成员'});
+    const emptyTrigger=roster.getByRole('button',{name:'查看处理中任务，0 项'});
+    const processing=page.getByRole('dialog',{name:'项目收件箱 · 处理中'});
+    await emptyTrigger.focus();
+    await emptyTrigger.press('Enter');
+    await processing.getByText('暂无处理中任务。').waitFor();
+    await page.keyboard.press('Escape');
+    await processing.waitFor({state:'hidden'});
+    await page.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='查看处理中任务，0 项');
+
+    const {delivery}=await rpc('project','wait',{session:'inbox-fixture',timeout:0},frontKey);
+    assert.equal(delivery.topic,root.id);
+    const pending=page.getByRole('dialog',{name:'项目收件箱 · 待处理'});
+    let release;
+    const delayed=new Promise(resolve=>{release=resolve;});
+    await page.route('**/api/owner/inbox',async route=>{
+      await delayed;
+      await route.fulfill({status:500,json:{error:'任务明细暂不可用'}});
+    },{times:1});
+    try {
+      await roster.getByRole('button',{name:'查看待处理任务，22 项'}).click();
+      await pending.getByText('正在读取任务…').waitFor();
+      release();
+      await pending.getByText('任务明细暂不可用').waitFor();
+    } finally { release(); }
+    await pending.getByRole('button',{name:'重试',exact:true}).click();
+    await pending.getByRole('link',{name:/独立核对任务 21/}).waitFor();
+    assert.equal(await pending.getByRole('listitem').count(),20);
+    await pending.getByRole('button',{name:'查看更早任务'}).click();
+    const outstanding=pending.getByRole('link',{name:/请分别核对发布窗口/});
+    assert.match(await outstanding.innerText(),/群主 → 项目乙/);
+    assert.equal(await pending.getByRole('listitem').count(),22);
+    if (process.env.RELAY_TEST_SHOTS)
+      await page.screenshot({path:path.join(process.env.RELAY_TEST_SHOTS,'网页端-项目收件箱.png')});
+    await outstanding.click();
+    const focused=page.locator('.message-located[data-message="'+root.id+'"]');
+    await focused.getByText(body,{exact:true}).waitFor();
+    await page.waitForFunction(id=>document.activeElement?.dataset.message===String(id),root.id);
+    await focused.getByText('@项目甲 · 已签收',{exact:true}).waitFor();
+    assert.equal(await pending.isVisible(),false);
+
+    await page.setViewportSize({width:375,height:740});
+    await page.locator('[data-view="members"]').click();
+    await page.getByRole('button',{name:'查看处理中任务，1 项'}).click();
+    const claimed=processing.getByRole('link',{name:/请分别核对发布窗口/});
+    await claimed.waitFor();
+    assert.match(await claimed.innerText(),/群主 → 项目甲/);
+    assert.ok(await processing.evaluate(el=>el.getBoundingClientRect().width<=innerWidth));
+    if (process.env.RELAY_TEST_SHOTS)
+      await page.screenshot({path:path.join(process.env.RELAY_TEST_SHOTS,'网页端-手机收件箱.png')});
+  } finally {
+    await page.close();
+    await rpc('owner','dissolve',{group});
+  }
+}
+
 async function checkPrivateChat(human,ownerPage,rpc,front) {
   const tabs=human.getByRole('navigation',{name:'频道详情'});
   const panel=human.getByRole('region',{name:'私聊',exact:true});
@@ -997,6 +1070,7 @@ async function checkTabSwitches(context,url) {
     const host=(await rpc('owner','detail',{group})).self;
     await checkPersonalFeed(page,group,host,front,qa);
     await checkTopicDirectory(page,group,rpc,front,qa);
+    await checkProjectInbox(context,origin,rpc);
     await checkFeedRecovery(context,origin+'/#/'+group+'/history');
     await checkTabSwitches(context,origin+'/#/'+group+'/history');
     await page.getByRole('complementary',{name:'频道成员'}).getByText('DeepSeek Harness').waitFor();
@@ -1296,6 +1370,6 @@ async function checkTabSwitches(context,url) {
     await click('退出登录');
     await page.getByRole('heading',{name:'登录工作区'}).waitFor();
     assert.deepEqual(errors,[]);
-    console.log('PASS · 主题切换、弹窗关闭、同事注册、账号设置、跨浏览器账号登录、多频道、频道生命周期、群公告、管理员、Markdown、Agent 绑定、私聊、话题、个人筛选');
+    console.log('PASS · 主题切换、使用手册、弹窗关闭、同事注册、账号设置、跨浏览器账号登录、多频道、频道生命周期、群公告、管理员、Markdown、Agent 绑定、私聊、话题、个人筛选、项目收件箱');
   } finally { await browser.close(); }
 })().catch(error=>{console.error(error); process.exitCode=1;});

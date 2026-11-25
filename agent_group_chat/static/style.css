@@ -92,7 +92,10 @@ small,.hint,.muted,.sub,.meta,.basis { color:var(--sub) }
 .server-info { flex:1 }
 .server-address small { color:var(--rail-sub); font-size:11px }
 .server-address b { font-size:12px; text-overflow:ellipsis; overflow:hidden; white-space:nowrap; font-weight:500 }
-.server-icon { display:grid; place-items:center; flex:none; width:30px; height:30px; border:1px solid var(--rail-line); border-radius:7px; color:var(--rail-sub); font-size:22px }
+.manual-open { flex:none; padding:7px 6px; border:0; background:transparent; color:var(--rail-text); font-size:11px; white-space:nowrap }
+.manual-content { display:grid; gap:14px; line-height:1.65 }
+.manual-content h3 { margin:0 0 3px; font-size:14px }
+.manual-content p { margin:0; color:var(--sub) }
 .theme-toggle { display:grid; place-items:center; flex:none; width:36px; height:36px; padding:0;
   border-color:var(--rail-line); background:transparent; color:var(--rail-text); font-size:18px; line-height:1 }
 .sidebar .theme-toggle:active { background:var(--active) }

@@ -1,4 +1,5 @@
 .DS_Store
+/premium-audit.json
 
 __pycache__/
 *.py[cod]

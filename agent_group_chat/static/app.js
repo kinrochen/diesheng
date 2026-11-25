@@ -267,6 +267,7 @@ privateChat.install();
 $('reply-context').append(action('取消答复','cancel-reply','text-button'));
 for (const id of ['owner-key','account-password','member-password']) $(id).after(secretToggle(id));
 if (!room) $('nav-heading').append(action('＋','create','square',{'aria-label':'新建群聊',title:'新建群聊'}));
+$('theme-toggle').before(action('使用手册','open-manual','manual-open',{'aria-haspopup':'dialog'}));
 if (room) {
   const settings=action('','account-settings','account-identity',{id:'account-identity','aria-haspopup':'dialog'});
   settings.append(...$('account').children,node('span',{class:'account-caret','aria-hidden':'true'},'›'));
@@ -1272,6 +1273,17 @@ async function refresh(mode) {
     } else notice('暂时无法刷新，当前显示上次读取的记录');
   } finally { if (id===state.serial) refreshing=false; }
 }
+function openManual(trigger) {
+  const sections=[
+    ['创建和加入频道','群主可在侧栏点击「＋」创建频道。同事通过邀请链接加入，之后可从首页登录。'],
+    ['邀请 Agent','在频道中点击「邀请 Agent」，复制链接并发送给项目会话，让 Agent 加入频道并监听。'],
+    ['发起讨论','在输入框中输入消息，使用 @ 选择成员；勾选「仅同步」可分享消息而无需成员答复。Enter 发送，Shift + Enter 换行。'],
+    ['跟进与协作','在「话题」查看讨论进展，在「公告」查看频道规则；从成员列表或「私聊」发起私聊。'],
+    ['个人设置','点击侧栏底部的账号可管理账号设置，使用旁边的主题按钮切换深浅模式。']
+  ];
+  openDialog('使用手册',[node('div',{class:'manual-content'},...sections.map(([heading,body])=>
+    node('section',{},node('h3',{},heading),node('p',{},body))))],null,undefined,false,trigger);
+}
 function field(id,label,limit,required=false) {
   return node('div',{class:'field'},node('label',{for:id},label),node('input',{id,name:id,maxlength:limit,
     required:required?'':null,'aria-describedby':'dialog-error',autocomplete:'off'}));
@@ -1522,6 +1534,7 @@ async function handle(button) {
   const g=state.group, id=button.dataset.id;
   switch (button.dataset.action) {
     case 'toggle-secret': toggleSecret($(id),button); break;
+    case 'open-manual': openManual(button); break;
     case 'clear': {
       const input=$('query'); input.value=''; button.hidden=true; input.focus();
       searchRoute(''); break;

@@ -51,6 +51,27 @@ async function checkThemeChoice(page,shot) {
   await page.setViewportSize({width:1320,height:820});
 }
 
+async function checkUserGuide(page) {
+  const trigger=page.getByRole('button',{name:'使用手册',exact:true});
+  const guide=page.getByRole('dialog',{name:'使用手册'});
+  const viewport=page.viewportSize();
+  async function openAndClose() {
+    await guide.getByRole('heading',{name:'创建和加入频道'}).waitFor();
+    await page.keyboard.press('Escape');
+    await guide.waitFor({state:'hidden'});
+    await page.waitForFunction(()=>document.activeElement?.dataset.action==='open-manual');
+  }
+  await trigger.focus();
+  await trigger.press('Enter');
+  await openAndClose();
+  await page.setViewportSize({width:375,height:740});
+  await page.locator('#nav-toggle').click();
+  await trigger.click();
+  await openAndClose();
+  await page.keyboard.press('Escape');
+  await page.setViewportSize(viewport);
+}
+
 async function checkRecoveryDialog(page,origin) {
   await page.goto(origin+'/#channels');
   const open=page.getByRole('button',{name:'使用旧恢复码'});
@@ -897,6 +918,7 @@ async function checkTabSwitches(context,url) {
     assert.equal(await page.locator('#service').innerText(),new URL(team).host);
     const group=await page.evaluate(()=>location.hash.split('/')[1]);
     await checkThemeChoice(page,shot);
+    await checkUserGuide(page);
     await checkPendingInviteDismissal(page);
     await click('邀请 Agent');
     await click('复制链接');

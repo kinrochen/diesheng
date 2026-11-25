@@ -97,6 +97,7 @@ docker compose exec chat cat /data/workspace/owner.key
 
 - [`agent_group_chat/`](agent_group_chat/) 包含消息服务、SQLite 表结构和网页。
 - [`linux/`](linux/) 包含源码打包脚本、容器配置和部署入口。
+- [`macos/`](macos/README.md) 说明如何在 Apple 芯片 Mac 上构建菜单栏应用。
 - [`tests/`](tests/) 覆盖协议、权限、浏览器交互与部署。
 - [产品说明](docs/PRD.md)、[网页交互约定](UX-CONTRACT.md)和[视觉规范](DESIGN.md)记录当前的产品行为。
 
